@@ -1,0 +1,576 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  TEACHER
+  STUDENT
+}
+
+enum CourseRole {
+  STUDENT
+  TEACHER
+}
+
+enum ScheduleType {
+  LECTURE
+  PRACTICE
+  LAB
+  EXAM
+}
+
+enum SubmissionStatus {
+  DRAFT
+  SUBMITTED
+}
+
+enum NotificationType {
+  ASSIGNMENT_DUE
+  ANNOUNCEMENT
+  GRADE_PUBLISHED
+  SYSTEM
+  CLASS_REMINDER
+  DEADLINE_REMINDER
+}
+
+enum QuizSource {
+  MANUAL
+  AI_GENERATED
+}
+
+enum QuizSessionStatus {
+  LOBBY
+  IN_PROGRESS
+  FINISHED
+  CANCELLED
+}
+
+enum QuestionDifficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+model User {
+  id                  String              @id @default(uuid())
+  email               String              @unique
+  passwordHash        String?             @map("password_hash")
+  fullName            String              @map("full_name")
+  role                Role                @default(STUDENT)
+  groupId             String?             @map("group_id")
+  preferredLang       String?             @map("preferred_lang")
+  /// TOTP shared secret (base32). Null until user enables 2FA.
+  totpSecret          String?             @map("totp_secret")
+  /// 2FA is only enforced when this is true AND totpSecret is set.
+  totpEnabled         Boolean             @default(false) @map("totp_enabled")
+  /// Telegram chat_id (string of digits) linked by the user. When set, notifications fan out to TG too.
+  telegramChatId      String?             @map("telegram_chat_id")
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @updatedAt @map("updated_at")
+  deletedAt           DateTime?           @map("deleted_at")
+  group               Group?              @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  enrollments         Enrollment[]
+  announcements       Announcement[]
+  submissions         Submission[]
+  gradesGiven         Grade[]             @relation("GradedBy")
+  notifications       Notification[]
+  taughtCourses       Course[]            @relation("CourseTeacher")
+  activityLogs        ActivityLog[]
+  attendance          Attendance[]
+  aiRequestLogs       AiRequestLog[]
+  assignmentComments  AssignmentComment[]
+  quizzesCreated      Quiz[]              @relation("QuizCreatedBy")
+  quizAttempts        QuizAttempt[]       @relation("QuizAttemptStudent")
+  quizSessionsHosted  QuizSession[]       @relation("QuizSessionHost")
+
+  @@map("users")
+}
+
+model Group {
+  id            String         @id @default(uuid())
+  name          String         @unique
+  degree        String?
+  year          Int?
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+  deletedAt     DateTime?      @map("deleted_at")
+  users         User[]
+  scheduleItems ScheduleItem[]
+
+  @@map("groups")
+}
+
+model Course {
+  id            String           @id @default(uuid())
+  code          String           @unique
+  title         String
+  description   String           @default("")
+  teacherId     String?          @map("teacher_id")
+  semester      String           @default("2025-Spring")
+  createdAt     DateTime         @default(now()) @map("created_at")
+  updatedAt     DateTime         @updatedAt @map("updated_at")
+  deletedAt     DateTime?        @map("deleted_at")
+  teacher       User?            @relation("CourseTeacher", fields: [teacherId], references: [id], onDelete: SetNull)
+  enrollments   Enrollment[]
+  announcements Announcement[]
+  assignments   Assignment[]
+  scheduleItems ScheduleItem[]
+  materials     CourseMaterial[]
+  attendance    Attendance[]
+  quizzes       Quiz[]
+
+  @@index([teacherId])
+  @@map("courses")
+}
+
+model CourseMaterial {
+  id        String    @id @default(uuid())
+  courseId  String    @map("course_id")
+  title     String
+  type      String
+  url       String?
+  content   String?
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
+  course    Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@index([courseId])
+  @@map("course_materials")
+}
+
+model Attendance {
+  id        String   @id @default(uuid())
+  courseId  String   @map("course_id")
+  studentId String   @map("student_id")
+  date      DateTime @db.Date
+  status    String
+  createdAt DateTime @default(now()) @map("created_at")
+  course    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  student   User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([courseId, studentId, date])
+  @@index([courseId])
+  @@index([studentId])
+  @@map("attendance")
+}
+
+model Enrollment {
+  id           String     @id @default(uuid())
+  userId       String     @map("user_id")
+  courseId     String     @map("course_id")
+  roleInCourse CourseRole @default(STUDENT) @map("role_in_course")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  deletedAt    DateTime?  @map("deleted_at")
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  course       Course     @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, courseId])
+  @@index([courseId])
+  @@index([userId])
+  @@map("enrollments")
+}
+
+model Announcement {
+  id        String    @id @default(uuid())
+  courseId  String?   @map("course_id")
+  authorId  String    @map("author_id")
+  title     String
+  body      String
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
+  course    Course?   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  author    User      @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([courseId])
+  @@map("announcements")
+}
+
+model Assignment {
+  id          String               @id @default(uuid())
+  courseId    String               @map("course_id")
+  title       String
+  description String               @default("")
+  dueAt       DateTime             @map("due_at")
+  maxScore    Int                  @default(100) @map("max_score")
+  createdAt   DateTime             @default(now()) @map("created_at")
+  updatedAt   DateTime             @updatedAt @map("updated_at")
+  deletedAt   DateTime?            @map("deleted_at")
+  course      Course               @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  submissions Submission[]
+  resources   AssignmentResource[]
+  comments    AssignmentComment[]
+  plagiarismReports PlagiarismReport[]
+
+  @@index([courseId])
+  @@index([dueAt])
+  @@map("assignments")
+}
+
+model AssignmentResource {
+  id           String     @id @default(uuid())
+  assignmentId String     @map("assignment_id")
+  fileName     String     @map("file_name")
+  fileUrl      String     @map("file_url")
+  fileSize     Int?       @map("file_size")
+  mimeType     String?    @map("mime_type")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  deletedAt    DateTime?  @map("deleted_at")
+  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+
+  @@index([assignmentId])
+  @@map("assignment_resources")
+}
+
+model AssignmentComment {
+  id           String     @id @default(uuid())
+  assignmentId String     @map("assignment_id")
+  authorId     String     @map("author_id")
+  body         String     @db.Text
+  createdAt    DateTime   @default(now()) @map("created_at")
+  deletedAt    DateTime?  @map("deleted_at")
+  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  author       User       @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([assignmentId])
+  @@index([authorId])
+  @@map("assignment_comments")
+}
+
+model Submission {
+  id           String                 @id @default(uuid())
+  assignmentId String                 @map("assignment_id")
+  studentId    String                 @map("student_id")
+  contentText  String?                @map("content_text")
+  contentUrl   String?                @map("content_url")
+  fileUrl      String?                @map("file_url")
+  submittedAt  DateTime?              @map("submitted_at")
+  status       SubmissionStatus       @default(DRAFT)
+  createdAt    DateTime               @default(now()) @map("created_at")
+  updatedAt    DateTime               @updatedAt @map("updated_at")
+  assignment   Assignment             @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  student      User                   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  grade        Grade?
+  attachments  SubmissionAttachment[]
+  plagiarismReportsA PlagiarismReport[] @relation("PlagiarismSubmissionA")
+  plagiarismReportsB PlagiarismReport[] @relation("PlagiarismSubmissionB")
+
+  @@unique([assignmentId, studentId])
+  @@index([assignmentId])
+  @@index([studentId])
+  @@map("submissions")
+}
+
+model SubmissionAttachment {
+  id           String     @id @default(uuid())
+  submissionId String     @map("submission_id")
+  fileName     String     @map("file_name")
+  fileUrl      String     @map("file_url")
+  fileSize     Int?       @map("file_size")
+  mimeType     String?    @map("mime_type")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
+  @@map("submission_attachments")
+}
+
+model PlagiarismReport {
+  id              String   @id @default(uuid())
+  assignmentId    String   @map("assignment_id")
+  submissionAId   String   @map("submission_a_id")
+  submissionBId   String   @map("submission_b_id")
+  similarity      Float
+  matchedNgrams   Int      @default(0) @map("matched_ngrams")
+  methodVersion   String   @default("jaccard-3gram-v1") @map("method_version")
+  createdAt       DateTime @default(now()) @map("created_at")
+  assignment      Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  submissionA     Submission @relation("PlagiarismSubmissionA", fields: [submissionAId], references: [id], onDelete: Cascade)
+  submissionB     Submission @relation("PlagiarismSubmissionB", fields: [submissionBId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionAId, submissionBId, methodVersion])
+  @@index([assignmentId])
+  @@index([submissionAId])
+  @@index([submissionBId])
+  @@map("plagiarism_reports")
+}
+
+model Grade {
+  id           String     @id @default(uuid())
+  submissionId String     @unique @map("submission_id")
+  gradedById   String     @map("graded_by_id")
+  score        Float
+  feedback     String?
+  gradedAt     DateTime   @default(now()) @map("graded_at")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  gradedBy     User       @relation("GradedBy", fields: [gradedById], references: [id], onDelete: Cascade)
+
+  @@map("grades")
+}
+
+model ScheduleItem {
+  id              String       @id @default(uuid())
+  courseId        String       @map("course_id")
+  groupId         String?      @map("group_id")
+  startsAt        DateTime     @map("starts_at")
+  endsAt          DateTime     @map("ends_at")
+  room            String
+  type            ScheduleType @default(LECTURE)
+  /// Set by ReminderService once the "1h-before-class" Telegram blast has gone out — keeps us idempotent on cron retries.
+  reminderSentAt  DateTime?    @map("reminder_sent_at")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  deletedAt       DateTime?    @map("deleted_at")
+  course          Course       @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  group           Group?       @relation(fields: [groupId], references: [id], onDelete: SetNull)
+
+  @@index([courseId])
+  @@index([startsAt])
+  @@map("schedule_items")
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String           @map("user_id")
+  type      NotificationType @default(SYSTEM)
+  title     String
+  body      String?
+  link      String?
+  isRead    Boolean          @default(false) @map("is_read")
+  createdAt DateTime         @default(now()) @map("created_at")
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("notifications")
+}
+
+model ActivityLog {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  action    String
+  entity    String
+  entityId  String?  @map("entity_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("activity_logs")
+}
+
+model AiRequestLog {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  type      String
+  prompt    String   @db.Text
+  response  String   @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("ai_request_logs")
+}
+
+// ─── Quiz system (manual + AI-generated, with future Kahoot mode) ──────────────
+//
+// A Quiz belongs to a Course and holds a list of QuizQuestions in display order.
+// Source is MANUAL when a teacher hand-wrote it, AI_GENERATED when Claude
+// produced it (we still let the teacher edit before publishing).
+//
+// QuizAttempts record every play-through — for both single-player practice and
+// live Kahoot-style sessions. Each attempt has one QuizAttemptAnswer per
+// question the student answered.
+//
+// QuizSession (added for live multiplayer) groups simultaneous attempts under
+// a 6-digit join code so a teacher can host a real-time quiz.
+
+model Quiz {
+  id              String         @id @default(uuid())
+  courseId        String         @map("course_id")
+  createdById     String         @map("created_by_id")
+  title           String
+  description     String         @default("")
+  source          QuizSource     @default(MANUAL)
+  isPublished     Boolean        @default(false) @map("is_published")
+  secondsPerQuestion Int         @default(30) @map("seconds_per_question")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+  deletedAt       DateTime?      @map("deleted_at")
+  course          Course         @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  createdBy       User           @relation("QuizCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
+  questions       QuizQuestion[]
+  attempts        QuizAttempt[]
+  sessions        QuizSession[]
+
+  @@index([courseId])
+  @@index([createdById])
+  @@map("quizzes")
+}
+
+model QuizQuestion {
+  id           String                @id @default(uuid())
+  quizId       String                @map("quiz_id")
+  position     Int                   @default(0)
+  question     String                @db.Text
+  options      Json                  // ["A","B","C","D"] — usually 4 options
+  correctIndex Int                   @map("correct_index")
+  explanation  String                @default("") @db.Text
+  points       Int                   @default(100)
+  difficulty   QuestionDifficulty    @default(MEDIUM)
+  createdAt    DateTime              @default(now()) @map("created_at")
+  deletedAt    DateTime?             @map("deleted_at")
+  quiz         Quiz                  @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  answers      QuizAttemptAnswer[]
+
+  @@index([quizId])
+  @@index([quizId, difficulty])
+  @@map("quiz_questions")
+}
+
+model QuizAttempt {
+  id            String                @id @default(uuid())
+  quizId        String                @map("quiz_id")
+  studentId     String                @map("student_id")
+  sessionId     String?               @map("session_id")
+  startedAt     DateTime              @default(now()) @map("started_at")
+  completedAt   DateTime?             @map("completed_at")
+  score         Int                   @default(0)
+  totalPoints   Int                   @default(0) @map("total_points")
+  quiz          Quiz                  @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  student       User                  @relation("QuizAttemptStudent", fields: [studentId], references: [id], onDelete: Cascade)
+  session       QuizSession?          @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  answers       QuizAttemptAnswer[]
+
+  @@index([quizId])
+  @@index([studentId])
+  @@index([sessionId])
+  @@map("quiz_attempts")
+}
+
+model QuizAttemptAnswer {
+  id             String       @id @default(uuid())
+  attemptId      String       @map("attempt_id")
+  questionId     String       @map("question_id")
+  pickedIndex    Int          @map("picked_index")
+  isCorrect      Boolean      @map("is_correct")
+  pointsEarned   Int          @default(0) @map("points_earned")
+  responseTimeMs Int          @default(0) @map("response_time_ms")
+  answeredAt     DateTime     @default(now()) @map("answered_at")
+  attempt        QuizAttempt  @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question       QuizQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, questionId])
+  @@index([attemptId])
+  @@index([questionId])
+  @@map("quiz_attempt_answers")
+}
+
+model QuizSession {
+  id           String            @id @default(uuid())
+  quizId       String            @map("quiz_id")
+  hostId       String            @map("host_id")
+  joinCode     String            @unique @map("join_code")
+  status       QuizSessionStatus @default(LOBBY)
+  currentIndex Int               @default(0) @map("current_index")
+  startedAt    DateTime?         @map("started_at")
+  endedAt      DateTime?         @map("ended_at")
+  createdAt    DateTime          @default(now()) @map("created_at")
+  quiz         Quiz              @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  host         User              @relation("QuizSessionHost", fields: [hostId], references: [id], onDelete: Cascade)
+  attempts     QuizAttempt[]
+
+  @@index([quizId])
+  @@index([joinCode])
+  @@map("quiz_sessions")
+}
+
+// ─── Telegram bot integration ────────────────────────────────────────────
+
+/// Mapping of a sent Telegram quiz poll back to the originating quiz question
+/// and student. Populated by QuizBroadcastService (Phase 2.1) and consumed by
+/// the `poll_answer` handler in TelegramUpdatesService to record the answer.
+model QuizTelegramPoll {
+  id          String    @id @default(uuid())
+  /// Telegram-side poll id (string). One row per (student × question) so we
+  /// can support resending the same quiz to the same chat later.
+  pollId      String    @unique @map("poll_id")
+  quizId      String    @map("quiz_id")
+  questionId  String    @map("question_id")
+  studentId   String    @map("student_id")
+  pickedIndex Int?      @map("picked_index")
+  answeredAt  DateTime? @map("answered_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([studentId])
+  @@index([quizId])
+  @@map("quiz_telegram_polls")
+}
+
+/// Live Kahoot subscription — student joined a session via `/join CODE` in
+/// the bot. The gateway fans out each question to every subscription's
+/// `chatId`, and the resulting poll_answer is matched back here.
+model KahootTelegramSubscription {
+  id        String   @id @default(uuid())
+  sessionId String   @map("session_id")
+  userId    String   @map("user_id")
+  /// We store the chat_id as string for consistency with User.telegramChatId.
+  chatId    String   @map("chat_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([sessionId, chatId], name: "sessionId_chatId")
+  @@index([sessionId])
+  @@map("kahoot_telegram_subscriptions")
+}
+
+/// Per-question poll record for live Kahoot sessions — pairs a Telegram poll
+/// with the question + session so we can score answers via the gateway path
+/// when the student taps an option in their chat.
+model KahootTelegramPoll {
+  id                 String   @id @default(uuid())
+  pollId             String   @unique @map("poll_id")
+  sessionId          String   @map("session_id")
+  questionId         String   @map("question_id")
+  chatId             String   @map("chat_id")
+  openPeriodSeconds  Int      @map("open_period_seconds")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@index([sessionId])
+  @@map("kahoot_telegram_polls")
+}
+
+/// Idempotency log for assignment-deadline reminders (Phase 3.2). Without
+/// this, a cron retry / overlap would double-blast students about the same
+/// deadline.
+model AssignmentReminderLog {
+  id           String   @id @default(uuid())
+  assignmentId String   @map("assignment_id")
+  userId       String   @map("user_id")
+  /// `h24` = 24h-before, `h1` = 1h-before. Composite-unique with assignmentId+userId.
+  kind         String
+  sentAt       DateTime @default(now()) @map("sent_at")
+
+  @@unique([assignmentId, userId, kind])
+  @@index([userId])
+  @@map("assignment_reminder_log")
+}
+
+/// A Telegram group chat bound to a course (Phase 4.2). When teachers post an
+/// ANNOUNCEMENT for the course, NotificationsService also broadcasts in this
+/// chat — saves linked students from getting both a DM and a group ping.
+model CourseTelegramGroup {
+  id        String   @id @default(uuid())
+  courseId  String   @unique @map("course_id")
+  /// Telegram group chat id — negative number stored as string (matches the
+  /// User.telegramChatId pattern; group ids are -100... in TG).
+  chatId    String   @map("chat_id")
+  boundById String   @map("bound_by_id")
+  boundAt   DateTime @default(now()) @map("bound_at")
+
+  @@map("course_telegram_groups")
+}
